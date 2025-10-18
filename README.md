@@ -5,6 +5,10 @@
 
 The World's Smallest 3D Game (smaller than .kkrieger by ~2 times)
 
+<details>
+
+<summary> Python Version</summary>
+
 ## ALPHA VERSIONS (LOSTMEDIA):
 
 alphalastest (ALPHABUILD) - 16.2 KiB   smaller than .kkrieger by 5.7 times
@@ -24,3 +28,5 @@ v0.5.0 (UNPLAYABLE) - 43.7 KiB smaller than .kkrieger by 2.1 times
 v0.5.0 (FIXED) (laggy) - 43.9 KiB smaller than .kkrieger by 2.1 times
 
 v0.5.1 - 44.0 KiB smaller than .kkrieger by 2.1 times
+
+</details>
