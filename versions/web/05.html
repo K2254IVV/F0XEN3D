@@ -1,0 +1,1855 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Foxenstein3D - HTML5 Port (Optimized)</title>
+</head>
+<body>
+    <canvas id="gameCanvas" width="800" height="600"></canvas>
+    <div>
+        <button id="startBtn">Start Game</button>
+        <button id="stopBtn">Stop Game</button>
+        <button id="reloadBtn">New Game</button>
+        <button id="nextLevelBtn" style="display:none;">Next Level</button>
+        <button id="pauseBtn">Pause</button>
+    </div>
+    <div>
+        <label for="fpsInput">FPS Limit:</label>
+        <input type="number" id="fpsInput" value="60" min="1" max="120">
+        <button id="applyFpsBtn">Apply</button>
+    </div>
+    <div>
+        <p>Controls: Arrow Keys to move, Space to shoot, R to reload, ESC to pause</p>
+        <p>Health: <span id="health">100</span> | Score: <span id="score">0</span> | Ammo: <span id="ammo">30</span> | Level: <span id="level">1</span></p>
+    </div>
+
+    <script>
+        // Game constants
+        const SCREEN_WIDTH = 800;
+        const SCREEN_HEIGHT = 600;
+        const HALF_HEIGHT = SCREEN_HEIGHT / 2;
+        const FOV = Math.PI / 3;
+        const HALF_FOV = FOV / 2;
+        const MAX_DEPTH = 20;
+        const MOVE_SPEED = 0.1;
+        const ROTATION_SPEED = 0.1;
+        const TEXTURE_SIZE = 64;
+        const MAX_ENTITY_DISTANCE = 15;
+        const MAP_SIZE = 15;
+
+        // Game states
+        const MAIN_MENU = 0;
+        const PLAYING = 1;
+        const PAUSED = 2;
+        const GAME_OVER = 3;
+
+        // Game state
+        let canvas, ctx;
+        let gameRunning = false;
+        let animationId;
+        let lastFrameTime = 0;
+        let lastStepTime = 0;
+        let stepInterval = 500;
+        let lastNoteTime = 0;
+        let currentNote = 0;
+        let fpsLimit = 60;
+        let gameState = MAIN_MENU;
+        let currentLevel = 1;
+        let enemiesKilled = 0;
+        let totalEnemies = 0;
+        let levelComplete = false;
+        let skyType = "SKY";
+        let lastEnemyAttackTime = 0;
+        let enemyAttackCooldown = 1000;
+
+        // Player state
+        let playerPos = [1.5, 1.5];
+        let playerAngle = 0.0;
+        let playerHealth = 100;
+        let playerScore = 0;
+        let playerAmmo = 30;
+
+        // Audio context for sound generation
+        let audioContext;
+        let soundBuffers = {};
+        let menuMusic = [];
+        let gameMusic = [];
+        let currentMusicPattern = [];
+        let musicPlaying = false;
+
+        // Z-buffer for proper rendering
+        let zBuffer = new Array(SCREEN_WIDTH).fill(Number.MAX_VALUE);
+
+        // Map and entities
+        let MAP = null;
+        let entities = [];
+        let bullets = [];
+
+        // Floor rendering optimization
+        let floorCanvas = document.createElement('canvas');
+        floorCanvas.width = SCREEN_WIDTH;
+        floorCanvas.height = HALF_HEIGHT;
+        let floorCtx = floorCanvas.getContext('2d');
+        let floorPattern = null;
+
+        // Generate procedural map with improved connectivity
+        function generateProceduralMap(width, height, seed, level) {
+            // Simple seeded random function
+            let random = function() {
+                seed = (seed * 9301 + 49297) % 233280;
+                return seed / 233280;
+            };
+            
+            let mapData = Array(width).fill().map(() => Array(height).fill(0));
+
+            // Outer walls
+            for (let i = 0; i < width; i++) {
+                mapData[i][0] = 1;
+                mapData[i][height-1] = 1;
+            }
+            for (let j = 0; j < height; j++) {
+                mapData[0][j] = 1;
+                mapData[width-1][j] = 1;
+            }
+
+            // Create rooms
+            let rooms = [];
+            for (let i = 2; i < width-2; i += 4) {
+                for (let j = 2; j < height-2; j += 4) {
+                    if (random() > 0.4) {
+                        let roomWidth = Math.floor(random() * 3) + 2;
+                        let roomHeight = Math.floor(random() * 3) + 2;
+                        if (i + roomWidth < width-1 && j + roomHeight < height-1) {
+                            // Create room
+                            for (let x = 0; x < roomWidth; x++) {
+                                for (let y = 0; y < roomHeight; y++) {
+                                    mapData[i+x][j+y] = 0;
+                                }
+                            }
+                            rooms.push([i, j, roomWidth, roomHeight]);
+                        }
+                    }
+                }
+            }
+
+            // Connect rooms with corridors
+            for (let i = 0; i < rooms.length - 1; i++) {
+                let room1 = rooms[i];
+                let room2 = rooms[i+1];
+
+                // Horizontal corridor
+                let startX = Math.min(room1[0] + Math.floor(room1[2]/2), room2[0] + Math.floor(room2[2]/2));
+                let endX = Math.max(room1[0] + Math.floor(room1[2]/2), room2[0] + Math.floor(room2[2]/2));
+                let corridorY = room1[1] + Math.floor(room1[3]/2);
+
+                for (let x = startX; x <= endX; x++) {
+                    if (x > 0 && x < width-1) {
+                        mapData[x][corridorY] = 0;
+                        // Add walls around corridor
+                        if (corridorY > 0) mapData[x][corridorY-1] = Math.floor(random() * 3) + 1;
+                        if (corridorY < height-1) mapData[x][corridorY+1] = Math.floor(random() * 3) + 1;
+                    }
+                }
+
+                // Vertical corridor
+                let startY = Math.min(room1[1] + Math.floor(room1[3]/2), room2[1] + Math.floor(room2[3]/2));
+                let endY = Math.max(room1[1] + Math.floor(room1[3]/2), room2[1] + Math.floor(room2[3]/2));
+                let corridorX = room2[0] + Math.floor(room2[2]/2);
+
+                for (let y = startY; y <= endY; y++) {
+                    if (y > 0 && y < height-1) {
+                        mapData[corridorX][y] = 0;
+                        // Add walls around corridor
+                        if (corridorX > 0) mapData[corridorX-1][y] = Math.floor(random() * 3) + 1;
+                        if (corridorX < width-1) mapData[corridorX+1][y] = Math.floor(random() * 3) + 1;
+                    }
+                }
+            }
+
+            // Add random walls for variety
+            for (let i = 1; i < width-1; i++) {
+                for (let j = 1; j < height-1; j++) {
+                    if (mapData[i][j] === 0 && random() < 0.1) {
+                        if (mapData[i-1][j] === 0 && mapData[i+1][j] === 0 && 
+                            mapData[i][j-1] === 0 && mapData[i][j+1] === 0) {
+                            mapData[i][j] = Math.floor(random() * 3) + 1;
+                        }
+                    }
+                }
+            }
+
+            return mapData;
+        }
+
+        // Generate wall texture
+        function generateWallTexture(size = TEXTURE_SIZE, style = 'brick') {
+            const texture = document.createElement('canvas');
+            texture.width = size;
+            texture.height = size;
+            const textureCtx = texture.getContext('2d');
+            const imageData = textureCtx.createImageData(size, size);
+            const data = imageData.data;
+            
+            let baseColor;
+            
+            if (style === 'brick') {
+                baseColor = [
+                    Math.floor(Math.random() * 50) + 150,
+                    Math.floor(Math.random() * 50) + 100,
+                    Math.floor(Math.random() * 50) + 50
+                ];
+                
+                for (let y = 0; y < size; y++) {
+                    for (let x = 0; x < size; x++) {
+                        // Create brick pattern
+                        const brickX = x % 16;
+                        const brickY = y % 16;
+                        
+                        let color;
+                        
+                        // Brick borders
+                        if (brickX === 0 || brickY === 0 || brickX === 15 || brickY === 15) {
+                            color = [
+                                Math.max(0, baseColor[0] - 50),
+                                Math.max(0, baseColor[1] - 50),
+                                Math.max(0, baseColor[2] - 50)
+                            ];
+                        } else {
+                            // Color variation inside brick
+                            const variation = Math.floor(Math.random() * 61) - 30;
+                            color = [
+                                Math.max(0, Math.min(255, baseColor[0] + variation)),
+                                Math.max(0, Math.min(255, baseColor[1] + variation)),
+                                Math.max(0, Math.min(255, baseColor[2] + variation))
+                            ];
+                        }
+                        
+                        // Add noise
+                        if (Math.random() < 0.05) {
+                            const noise = Math.floor(Math.random() * 41) - 20;
+                            color = [
+                                Math.max(0, Math.min(255, color[0] + noise)),
+                                Math.max(0, Math.min(255, color[1] + noise)),
+                                Math.max(0, Math.min(255, color[2] + noise))
+                            ];
+                        }
+                        
+                        const index = (y * size + x) * 4;
+                        data[index] = color[0];     // R
+                        data[index + 1] = color[1]; // G
+                        data[index + 2] = color[2]; // B
+                        data[index + 3] = 255;      // A
+                    }
+                }
+            } else if (style === 'metal') {
+                baseColor = [
+                    Math.floor(Math.random() * 50) + 100,
+                    Math.floor(Math.random() * 50) + 100,
+                    Math.floor(Math.random() * 60) + 120
+                ];
+                
+                for (let y = 0; y < size; y++) {
+                    for (let x = 0; x < size; x++) {
+                        // Metal texture with stripes
+                        const stripe = (x + y) % 8;
+                        let color;
+                        
+                        if (stripe < 2) {
+                            color = [
+                                Math.max(0, baseColor[0] - 50),
+                                Math.max(0, baseColor[1] - 50),
+                                Math.max(0, baseColor[2] - 50)
+                            ];
+                        } else {
+                            color = baseColor;
+                        }
+                        
+                        // Add grain
+                        if (Math.random() < 0.3) {
+                            const noise = Math.floor(Math.random() * 21) - 10;
+                            color = [
+                                Math.max(0, Math.min(255, color[0] + noise)),
+                                Math.max(0, Math.min(255, color[1] + noise)),
+                                Math.max(0, Math.min(255, color[2] + noise))
+                            ];
+                        }
+                        
+                        const index = (y * size + x) * 4;
+                        data[index] = color[0];     // R
+                        data[index + 1] = color[1]; // G
+                        data[index + 2] = color[2]; // B
+                        data[index + 3] = 255;      // A
+                    }
+                }
+            }
+            
+            textureCtx.putImageData(imageData, 0, 0);
+            return texture;
+        }
+
+        // Generate floor pattern (optimized - pre-rendered)
+        function generateFloorPattern() {
+            // Create a simple checkerboard pattern for the floor
+            const patternCanvas = document.createElement('canvas');
+            patternCanvas.width = 64;
+            patternCanvas.height = 64;
+            const patternCtx = patternCanvas.getContext('2d');
+            
+            // Create checkerboard pattern
+            const cellSize = 8;
+            for (let y = 0; y < 64; y += cellSize) {
+                for (let x = 0; x < 64; x += cellSize) {
+                    if (((x / cellSize + y / cellSize) % 2) === 0) {
+                        patternCtx.fillStyle = 'rgb(70, 70, 70)';
+                    } else {
+                        patternCtx.fillStyle = 'rgb(90, 90, 90)';
+                    }
+                    patternCtx.fillRect(x, y, cellSize, cellSize);
+                }
+            }
+            
+            return ctx.createPattern(patternCanvas, 'repeat');
+        }
+
+        // Generate weapon texture
+        function generateWeaponTexture(size = TEXTURE_SIZE) {
+            const texture = document.createElement('canvas');
+            texture.width = size;
+            texture.height = size;
+            const textureCtx = texture.getContext('2d');
+            
+            // Clear with transparent background
+            textureCtx.clearRect(0, 0, size, size);
+            
+            // Weapon body
+            textureCtx.fillStyle = 'rgb(100, 100, 100)';
+            textureCtx.fillRect(15, 20, 34, 10);
+            
+            textureCtx.fillStyle = 'rgb(80, 80, 80)';
+            textureCtx.fillRect(20, 15, 24, 20);
+            
+            // Barrel
+            textureCtx.fillStyle = 'rgb(60, 60, 60)';
+            textureCtx.fillRect(45, 22, 20, 6);
+            
+            // Handle
+            textureCtx.fillStyle = 'rgb(120, 80, 60)';
+            textureCtx.fillRect(10, 25, 10, 15);
+            
+            // Details
+            textureCtx.fillStyle = 'rgb(150, 150, 150)';
+            textureCtx.fillRect(25, 18, 14, 4);
+            
+            textureCtx.fillStyle = 'rgb(200, 0, 0)';
+            textureCtx.beginPath();
+            textureCtx.arc(40, 25, 3, 0, Math.PI * 2);
+            textureCtx.fill();
+            
+            return texture;
+        }
+
+        // Generate entity textures with improved graphics
+        function generateEntityTexture(size = TEXTURE_SIZE, entityType = "enemy") {
+            const texture = document.createElement('canvas');
+            texture.width = size;
+            texture.height = size;
+            const ctx = texture.getContext('2d');
+            
+            // Clear with transparent background
+            ctx.clearRect(0, 0, size, size);
+            
+            if (entityType === "enemy") {
+                // Enemy with gradient body
+                const centerX = size / 2;
+                const centerY = size / 2;
+                
+                // Create gradient for body
+                const gradient = ctx.createRadialGradient(centerX, centerY, 0, centerX, centerY, 20);
+                gradient.addColorStop(0, 'rgb(200, 50, 50)');
+                gradient.addColorStop(1, 'rgb(150, 30, 30)');
+                
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(centerX, centerY, 20, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // Head
+                ctx.fillStyle = 'rgb(150, 100, 100)';
+                ctx.beginPath();
+                ctx.arc(centerX, centerY - 8, 12, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // Eyes
+                ctx.fillStyle = 'rgb(255, 255, 255)';
+                ctx.beginPath();
+                ctx.arc(centerX - 5, centerY - 10, 3, 0, Math.PI * 2);
+                ctx.arc(centerX + 5, centerY - 10, 3, 0, Math.PI * 2);
+                ctx.fill();
+                
+                ctx.fillStyle = 'rgb(0, 0, 0)';
+                ctx.beginPath();
+                ctx.arc(centerX - 5, centerY - 10, 1, 0, Math.PI * 2);
+                ctx.arc(centerX + 5, centerY - 10, 1, 0, Math.PI * 2);
+                ctx.fill();
+                
+            } else if (entityType === "pluyabob") {
+                // Pluyabob enemy with blue body
+                const centerX = size / 2;
+                const centerY = size / 2;
+                
+                // Create gradient for body
+                const gradient = ctx.createRadialGradient(centerX, centerY, 0, centerX, centerY, 20);
+                gradient.addColorStop(0, 'rgb(50, 50, 200)');
+                gradient.addColorStop(1, 'rgb(30, 30, 150)');
+                
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(centerX, centerY, 20, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // Head
+                ctx.fillStyle = 'rgb(100, 100, 150)';
+                ctx.beginPath();
+                ctx.arc(centerX, centerY - 8, 12, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // Eyes (bigger)
+                ctx.fillStyle = 'rgb(255, 255, 255)';
+                ctx.beginPath();
+                ctx.arc(centerX - 6, centerY - 8, 4, 0, Math.PI * 2);
+                ctx.arc(centerX + 6, centerY - 8, 4, 0, Math.PI * 2);
+                ctx.fill();
+                
+                ctx.fillStyle = 'rgb(0, 0, 0)';
+                ctx.beginPath();
+                ctx.arc(centerX - 6, centerY - 8, 2, 0, Math.PI * 2);
+                ctx.arc(centerX + 6, centerY - 8, 2, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // Mouth
+                ctx.strokeStyle = 'rgb(0, 0, 0)';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.arc(centerX, centerY + 5, 8, 0, Math.PI, false);
+                ctx.stroke();
+                
+            } else if (entityType === "bullet") {
+                // Bullet texture
+                const centerX = size / 2;
+                const centerY = size / 2;
+                
+                // Create gradient for bullet
+                const gradient = ctx.createRadialGradient(centerX, centerY, 0, centerX, centerY, 8);
+                gradient.addColorStop(0, 'rgb(255, 150, 50)');
+                gradient.addColorStop(1, 'rgb(200, 100, 30)');
+                
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(centerX, centerY, 8, 0, Math.PI * 2);
+                ctx.fill();
+                
+            } else if (entityType === "item") {
+                // Improved items with gradient effects
+                if (Math.random() < 0.5) {
+                    // Health pack with gradient
+                    const gradient = ctx.createLinearGradient(20, 10, 44, 54);
+                    gradient.addColorStop(0, 'rgb(255, 100, 100)');
+                    gradient.addColorStop(1, 'rgb(200, 50, 50)');
+                    
+                    ctx.fillStyle = gradient;
+                    ctx.fillRect(20, 10, 24, 44);
+                    
+                    ctx.fillStyle = 'rgb(255, 255, 255)';
+                    ctx.fillRect(24, 14, 16, 36);
+                    
+                    ctx.fillStyle = 'rgb(255, 50, 50)';
+                    ctx.fillRect(28, 18, 8, 28);
+                } else {
+                    // Ammo with metallic effect
+                    for (let y = 10; y < 54; y++) {
+                        for (let x = 15; x < 49; x++) {
+                            const gold = 200 + ((x + y) % 3) * 20;
+                            ctx.fillStyle = `rgb(${gold}, ${gold}, 50)`;
+                            ctx.fillRect(x, y, 1, 1);
+                        }
+                    }
+                    
+                    ctx.fillStyle = 'rgb(150, 150, 150)';
+                    for (let i = 0; i < 3; i++) {
+                        ctx.fillRect(20, 15 + i * 12, 24, 8);
+                    }
+                }
+            }
+            
+            return texture;
+        }
+
+        // Entity class with improved AI and collision
+        class Entity {
+            constructor(x, y, entityType, texture, damage = 0, health = 1) {
+                this.pos = [x, y];
+                this.type = entityType;
+                this.texture = texture;
+                this.active = true;
+                this.animationFrame = 0;
+                this.damage = damage;
+                this.health = health;
+                this.lastAttackTime = 0;
+                this.attackCooldown = 1000;  // 1 second for regular enemies
+                this.lastShotTime = 0;
+                this.shotCooldown = 2000;    // 2 seconds for pluyabobs
+            }
+
+            canMoveTo(newPos, mapData) {
+                const mapX = Math.floor(newPos[0]);
+                const mapY = Math.floor(newPos[1]);
+                return mapX >= 0 && mapX < mapData.length && 
+                       mapY >= 0 && mapY < mapData[0].length && 
+                       mapData[mapX][mapY] === 0;
+            }
+
+            update(playerPos, currentTime, bullets, entities, mapData) {
+                if (this.type === "enemy" && this.active) {
+                    // Simple AI: follows the player
+                    const dx = playerPos[0] - this.pos[0];
+                    const dy = playerPos[1] - this.pos[1];
+                    const distance = Math.sqrt(dx * dx + dy * dy);
+                    
+                    if (distance > 0.5 && distance < 5.0) {
+                        const directionNormalized = [dx / distance, dy / distance];
+                        const newPos = [
+                            this.pos[0] + directionNormalized[0] * 0.02,
+                            this.pos[1] + directionNormalized[1] * 0.02
+                        ];
+                        
+                        // Improved collision handling
+                        if (this.canMoveTo(newPos, mapData)) {
+                            this.pos = newPos;
+                        } else if (this.canMoveTo([newPos[0], this.pos[1]], mapData)) {
+                            this.pos[0] = newPos[0];
+                        } else if (this.canMoveTo([this.pos[0], newPos[1]], mapData)) {
+                            this.pos[1] = newPos[1];
+                        } else {
+                            // Try to move around obstacle
+                            const sidePos = [
+                                this.pos[0] + (-directionNormalized[1]) * 0.02,
+                                this.pos[1] + directionNormalized[0] * 0.02
+                            ];
+                            if (this.canMoveTo(sidePos, mapData)) {
+                                this.pos = sidePos;
+                            }
+                        }
+                    }
+                    
+                    // Attack player at close range
+                    if (distance < 1.5 && currentTime - this.lastAttackTime > this.attackCooldown) {
+                        this.lastAttackTime = currentTime;
+                        return true;  // Return true if attacked
+                    }
+                    
+                    // Animation
+                    this.animationFrame = (this.animationFrame + 1) % 60;
+                    
+                } else if (this.type === "pluyabob" && this.active) {
+                    // Pluyabob shoots bullets
+                    const dx = playerPos[0] - this.pos[0];
+                    const dy = playerPos[1] - this.pos[1];
+                    const distance = Math.sqrt(dx * dx + dy * dy);
+                    
+                    if (distance < 8.0 && currentTime - this.lastShotTime > this.shotCooldown) {
+                        this.lastShotTime = currentTime;
+                        // Create a bullet
+                        if (distance > 0) {
+                            const bulletDir = [dx / distance, dy / distance];
+                            const bulletTexture = generateEntityTexture(TEXTURE_SIZE, "bullet");
+                            const bullet = new Entity(this.pos[0], this.pos[1], "bullet", bulletTexture, 10);
+                            bullet.velocity = [bulletDir[0] * 0.1, bulletDir[1] * 0.1];
+                            bullets.push(bullet);
+                            playSound('bullet_shot');
+                        }
+                    }
+                    
+                    // Animation
+                    this.animationFrame = (this.animationFrame + 1) % 60;
+                    
+                } else if (this.type === "bullet" && this.active) {
+                    // Bullet movement
+                    this.pos[0] += this.velocity[0];
+                    this.pos[1] += this.velocity[1];
+                    
+                    // Check collision with walls
+                    const mapX = Math.floor(this.pos[0]);
+                    const mapY = Math.floor(this.pos[1]);
+                    if (mapX >= 0 && mapX < mapData.length && mapY >= 0 && mapY < mapData[0].length) {
+                        if (mapData[mapX][mapY] > 0) {
+                            this.active = false;
+                            return false;
+                        }
+                    }
+                    
+                    // Check collision with player (for enemy bullets)
+                    if (this.damage > 0) {  // This is an enemy bullet
+                        const distToPlayer = Math.sqrt(
+                            Math.pow(this.pos[0] - playerPos[0], 2) + 
+                            Math.pow(this.pos[1] - playerPos[1], 2)
+                        );
+                        if (distToPlayer < 0.5) {
+                            this.active = false;
+                            return "player_hit";
+                        }
+                    } else {
+                        // Check collision with enemies (for player bullets)
+                        for (const entity of entities) {
+                            if ((entity.type === "enemy" || entity.type === "pluyabob") && entity.active) {
+                                const distToEntity = Math.sqrt(
+                                    Math.pow(this.pos[0] - entity.pos[0], 2) + 
+                                    Math.pow(this.pos[1] - entity.pos[1], 2)
+                                );
+                                if (distToEntity < 0.5) {
+                                    entity.health -= 10;  // Damage from player bullet
+                                    this.active = false;
+                                    if (entity.health <= 0) {
+                                        entity.active = false;
+                                        return entity;
+                                    } else {
+                                        playSound('enemy_hit');
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                return false;
+            }
+
+            distanceToPlayer(playerPos) {
+                const dx = this.pos[0] - playerPos[0];
+                const dy = this.pos[1] - playerPos[1];
+                return Math.sqrt(dx * dx + dy * dy);
+            }
+        }
+
+        // Generate entities with level-based count
+        function generateEntities(mapData, count = 10, level = 1) {
+            const entities = [];
+            let enemyCount = 0;
+            
+            // Increase enemy count with level
+            const enemyTarget = Math.min(Math.floor(count / 2) + level, count - 2);
+
+            for (let i = 0; i < count; i++) {
+                while (true) {
+                    const x = Math.floor(Math.random() * (mapData.length - 2)) + 1;
+                    const y = Math.floor(Math.random() * (mapData[0].length - 2)) + 1;
+                    if (mapData[x][y] === 0) {
+                        let entityType;
+                        let health, damage;
+                        
+                        if (enemyCount < enemyTarget) {
+                            // Randomly choose between regular enemy and pluyabob
+                            if (Math.random() < 0.7 || level < 3) {  // Early levels have more regular enemies
+                                entityType = "enemy";
+                                health = 30 + level * 5;
+                                damage = 10;
+                            } else {
+                                entityType = "pluyabob";
+                                health = 20 + level * 3;
+                                damage = 0;  // Pluyabobs don't do melee damage
+                            }
+                            
+                            enemyCount++;
+                        } else {
+                            entityType = "item";
+                            health = 1;
+                            damage = 0;
+                        }
+                        
+                        const texture = generateEntityTexture(TEXTURE_SIZE, entityType);
+                        entities.push(new Entity(x + 0.5, y + 0.5, entityType, texture, damage, health));
+                        break;
+                    }
+                }
+            }
+            
+            return { entities, enemyCount };
+        }
+
+        // Create textures
+        const wallTextures = [
+            generateWallTexture(TEXTURE_SIZE, 'brick'),
+            generateWallTexture(TEXTURE_SIZE, 'brick'),
+            generateWallTexture(TEXTURE_SIZE, 'metal')
+        ];
+        const weaponTexture = generateWeaponTexture(TEXTURE_SIZE);
+
+        // Sound generation functions
+        function generateSoundBuffer(frequency, duration, waveType = 'sine') {
+            if (!audioContext) return null;
+            
+            const sampleRate = audioContext.sampleRate;
+            const frameCount = sampleRate * duration;
+            const buffer = audioContext.createBuffer(1, frameCount, sampleRate);
+            const data = buffer.getChannelData(0);
+            
+            for (let i = 0; i < frameCount; i++) {
+                const t = i / sampleRate;
+                let value;
+                
+                if (waveType === 'sine') {
+                    value = 0.5 * Math.sin(2 * Math.PI * frequency * t);
+                } else if (waveType === 'square') {
+                    value = 0.3 * Math.sign(Math.sin(2 * Math.PI * frequency * t));
+                } else if (waveType === 'sawtooth') {
+                    value = 0.4 * (2 * (t * frequency - Math.floor(0.5 + t * frequency)));
+                } else if (waveType === 'noise') {
+                    value = 0.2 * Math.random() - 0.1;
+                }
+                
+                // Apply envelope
+                const attack = 0.1 * frameCount;
+                const decay = 0.2 * frameCount;
+                const release = 0.3 * frameCount;
+                
+                let envelope = 1;
+                if (i < attack) {
+                    envelope = i / attack;
+                } else if (i < attack + decay) {
+                    envelope = 1 - 0.3 * ((i - attack) / decay);
+                } else if (i > frameCount - release) {
+                    envelope = 0.7 - 0.7 * ((i - (frameCount - release)) / release);
+                }
+                
+                data[i] = value * envelope;
+            }
+            
+            return buffer;
+        }
+
+        function generateMenuMusic() {
+            const notes = [262, 294, 330, 349, 392, 440, 494, 523];  // C major scale
+            const melody = [];
+            
+            for (let i = 0; i < 8; i++) {
+                const note = notes[Math.floor(Math.random() * notes.length)];
+                const duration = 0.3 + Math.random() * 0.3;
+                const buffer = generateSoundBuffer(note, duration, 'sine');
+                melody.push({ buffer, duration });
+            }
+            
+            return melody;
+        }
+
+        function generateGameMusic() {
+            const chords = [
+                [220, 277, 329],  // A minor
+                [196, 247, 294],  // G
+                [247, 294, 370],  // B
+                [165, 208, 247]   // E
+            ];
+
+            const melody = [];
+            for (let i = 0; i < 3; i++) {
+                const chord = chords[Math.floor(Math.random() * chords.length)];
+                for (const note of chord) {
+                    const duration = 0.2 + Math.random() * 0.2;
+                    const freq = note * (0.98 + Math.random() * 0.04);
+                    const buffer = generateSoundBuffer(freq, duration, 'sine');
+                    melody.push({ buffer, duration });
+                }
+            }
+            return melody;
+        }
+
+        function initAudio() {
+            try {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                
+                // Generate sound buffers
+                soundBuffers = {
+                    'shot': generateSoundBuffer(100, 0.2, 'square'),
+                    'step': generateSoundBuffer(50, 0.1, 'noise'),
+                    'hit': generateSoundBuffer(300, 0.15, 'sine'),
+                    'pickup': generateSoundBuffer(400, 0.3, 'sine'),
+                    'level_up': generateSoundBuffer(600, 0.5, 'sine'),
+                    'enemy_hit': generateSoundBuffer(150, 0.2, 'square'),
+                    'bullet_shot': generateSoundBuffer(80, 0.15, 'square')
+                };
+                
+                // Generate music
+                menuMusic = generateMenuMusic();
+                gameMusic = generateGameMusic();
+                currentMusicPattern = menuMusic;
+            } catch (e) {
+                console.log("Audio not supported:", e);
+            }
+        }
+
+        function playSound(soundName) {
+            if (soundBuffers[soundName] && audioContext) {
+                const source = audioContext.createBufferSource();
+                source.buffer = soundBuffers[soundName];
+                source.connect(audioContext.destination);
+                source.start();
+            }
+        }
+
+        function playMusic(currentTime) {
+            if (currentMusicPattern.length === 0 || !musicPlaying) return;
+            
+            if (currentTime - lastNoteTime > currentMusicPattern[currentNote].duration * 1000) {
+                const note = currentMusicPattern[currentNote];
+                if (note.buffer && audioContext) {
+                    const source = audioContext.createBufferSource();
+                    source.buffer = note.buffer;
+                    source.connect(audioContext.destination);
+                    source.start();
+                }
+                currentNote = (currentNote + 1) % currentMusicPattern.length;
+                lastNoteTime = currentTime;
+            }
+        }
+
+        // Ray casting function
+        function castRay(angle) {
+            angle %= 2 * Math.PI;
+            
+            const rayDir = [Math.cos(angle), Math.sin(angle)];
+            const mapPos = [Math.floor(playerPos[0]), Math.floor(playerPos[1])];
+            
+            const deltaDist = [
+                Math.abs(1 / (rayDir[0] || 1e-8)),
+                Math.abs(1 / (rayDir[1] || 1e-8))
+            ];
+            
+            const step = [0, 0];
+            const sideDist = [0, 0];
+            
+            for (let i = 0; i < 2; i++) {
+                if (rayDir[i] < 0) {
+                    step[i] = -1;
+                    sideDist[i] = (playerPos[i] - mapPos[i]) * deltaDist[i];
+                } else {
+                    step[i] = 1;
+                    sideDist[i] = (mapPos[i] + 1 - playerPos[i]) * deltaDist[i];
+                }
+            }
+            
+            let hit = false;
+            let side = 0;
+            let textureId = 0;
+            let wallX = 0;
+            
+            for (let i = 0; i < MAX_DEPTH; i++) {
+                if (sideDist[0] < sideDist[1]) {
+                    sideDist[0] += deltaDist[0];
+                    mapPos[0] += step[0];
+                    side = 0;
+                } else {
+                    sideDist[1] += deltaDist[1];
+                    mapPos[1] += step[1];
+                    side = 1;
+                }
+                
+                if (mapPos[0] >= 0 && mapPos[0] < MAP.length && 
+                    mapPos[1] >= 0 && mapPos[1] < MAP[0].length) {
+                    if (MAP[mapPos[0]][mapPos[1]] > 0) {
+                        hit = true;
+                        textureId = Math.min(Math.max(0, MAP[mapPos[0]][mapPos[1]] - 1), 2);
+                        break;
+                    }
+                }
+            }
+            
+            if (hit) {
+                let perpDist;
+                if (side === 0) {
+                    perpDist = (mapPos[0] - playerPos[0] + (1 - step[0]) / 2) / rayDir[0];
+                } else {
+                    perpDist = (mapPos[1] - playerPos[1] + (1 - step[1]) / 2) / rayDir[1];
+                }
+                
+                // Calculate texture coordinate
+                if (side === 0) {
+                    wallX = playerPos[1] + perpDist * rayDir[1];
+                } else {
+                    wallX = playerPos[0] + perpDist * rayDir[0];
+                }
+                wallX -= Math.floor(wallX);
+                
+                return { dist: perpDist, side, textureId, wallX };
+            }
+            
+            return { dist: Number.MAX_VALUE, side: 0, textureId: 0, wallX: 0 };
+        }
+
+        // Check if entity is visible
+        function isEntityVisible(entityPos) {
+            const dx = entityPos[0] - playerPos[0];
+            const dy = entityPos[1] - playerPos[1];
+            const distToEntity = Math.sqrt(dx * dx + dy * dy);
+            
+            if (distToEntity <= 0) return true;
+            
+            const rayDir = [dx / distToEntity, dy / distToEntity];
+            let mapX = Math.floor(playerPos[0]);
+            let mapY = Math.floor(playerPos[1]);
+            let rayX = playerPos[0];
+            let rayY = playerPos[1];
+            
+            const deltaDistX = Math.abs(1 / (rayDir[0] || 1e-8));
+            const deltaDistY = Math.abs(1 / (rayDir[1] || 1e-8));
+            
+            const stepX = rayDir[0] >= 0 ? 1 : -1;
+            const stepY = rayDir[1] >= 0 ? 1 : -1;
+            
+            let sideDistX, sideDistY;
+            if (rayDir[0] < 0) {
+                sideDistX = (rayX - mapX) * deltaDistX;
+            } else {
+                sideDistX = (mapX + 1 - rayX) * deltaDistX;
+            }
+            
+            if (rayDir[1] < 0) {
+                sideDistY = (rayY - mapY) * deltaDistY;
+            } else {
+                sideDistY = (mapY + 1 - rayY) * deltaDistY;
+            }
+            
+            let currentDist = 0.0;
+            while (currentDist < distToEntity && currentDist < MAX_DEPTH) {
+                if (sideDistX < sideDistY) {
+                    sideDistX += deltaDistX;
+                    mapX += stepX;
+                    currentDist = (mapX - rayX + (1 - stepX) / 2.0) / rayDir[0] || Number.MAX_VALUE;
+                } else {
+                    sideDistY += deltaDistY;
+                    mapY += stepY;
+                    currentDist = (mapY - rayY + (1 - stepY) / 2.0) / rayDir[1] || Number.MAX_VALUE;
+                }
+                
+                // Check if we reached the entity
+                if (Math.abs(rayX + rayDir[0] * currentDist - entityPos[0]) < 0.5 && 
+                    Math.abs(rayY + rayDir[1] * currentDist - entityPos[1]) < 0.5) {
+                    return true;
+                }
+                
+                // Check for wall collision
+                if (mapX >= 0 && mapX < MAP.length && mapY >= 0 && mapY < MAP[0].length) {
+                    if (MAP[mapX][mapY] > 0) {
+                        return false;
+                    }
+                }
+            }
+            
+            return true;
+        }
+
+        // Render entities
+        function renderEntities() {
+            // Sort entities by distance (far to near)
+            const allEntities = [...entities, ...bullets];
+            const sortedEntities = allEntities.sort((a, b) => 
+                b.distanceToPlayer(playerPos) - a.distanceToPlayer(playerPos));
+            
+            for (const entity of sortedEntities) {
+                if (!entity.active) continue;
+                
+                // Enemy bullets are always visible
+                if (entity.type === "bullet" && entity.damage > 0) {
+                    // Pass - enemy bullets are always visible
+                } else if (!isEntityVisible(entity.pos)) {
+                    continue;
+                }
+                
+                const entityDir = [entity.pos[0] - playerPos[0], entity.pos[1] - playerPos[1]];
+                let entityAngle = Math.atan2(entityDir[1], entityDir[0]) - playerAngle;
+                entityAngle = (entityAngle + Math.PI) % (2 * Math.PI) - Math.PI;
+                
+                if (Math.abs(entityAngle) < HALF_FOV + 0.2 || entity.type === "bullet") {
+                    let dist = Math.sqrt(entityDir[0] * entityDir[0] + entityDir[1] * entityDir[1]);
+                    
+                    // Check for valid distance
+                    if (!isFinite(dist) || dist > MAX_ENTITY_DISTANCE || dist < 0.1) {
+                        continue;
+                    }
+                    
+                    if (entity.type !== "bullet") {  // Don't apply correction for bullets
+                        dist *= Math.cos(entityAngle);
+                    }
+                    
+                    // Check bounds
+                    const screenX = Math.floor((SCREEN_WIDTH / 2) * (1 + entityAngle / HALF_FOV));
+                    if (screenX < 0 || screenX >= SCREEN_WIDTH) continue;
+                    
+                    // Improved Z-buffer check with entity size
+                    let spriteHeight = Math.min(SCREEN_HEIGHT / dist, SCREEN_HEIGHT * 2);
+                    let spriteWidth = spriteHeight;
+                    
+                    // Make bullets smaller
+                    if (entity.type === "bullet") {
+                        spriteHeight = Math.max(10, spriteHeight / 3);
+                        spriteWidth = spriteHeight;
+                    }
+                    
+                    // Check Z-buffer for the entire sprite width
+                    let zCheckPass = true;
+                    const startX = Math.max(0, screenX - spriteWidth / 2);
+                    const endX = Math.min(SCREEN_WIDTH, screenX + spriteWidth / 2);
+                    
+                    for (let x = startX; x < endX; x++) {
+                        if (dist > zBuffer[x] + 0.1) {  // Small gap to prevent flickering
+                            zCheckPass = false;
+                            break;
+                        }
+                    }
+                    
+                    if (zCheckPass && dist > 0.1) {
+                        const spriteScreenX = screenX - spriteWidth / 2;
+                        const spriteScreenY = (SCREEN_HEIGHT - spriteHeight) / 2;
+                        
+                        if (spriteWidth > 0 && spriteHeight > 0) {
+                            // Draw the entity texture with smoothing
+                            ctx.imageSmoothingEnabled = true;
+                            ctx.imageSmoothingQuality = 'high';
+                            
+                            // Use original texture without animation effect
+                            let drawTexture = entity.texture;
+                            
+                            // Ensure sprite stays within screen bounds
+                            const drawX = Math.max(0, Math.min(SCREEN_WIDTH - spriteWidth, spriteScreenX));
+                            const drawY = Math.max(0, Math.min(SCREEN_HEIGHT - spriteHeight, spriteScreenY));
+                            
+                            ctx.drawImage(
+                                drawTexture, 
+                                0, 0, drawTexture.width, drawTexture.height,
+                                drawX, drawY, spriteWidth, spriteHeight
+                            );
+                            
+                            // Update Z-buffer for visible part
+                            for (let x = startX; x < endX; x++) {
+                                if (x >= 0 && x < SCREEN_WIDTH) {
+                                    zBuffer[x] = Math.min(zBuffer[x], dist);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Render walls
+        function renderWalls() {
+            // Reset Z-buffer
+            zBuffer.fill(Number.MAX_VALUE);
+            
+            for (let x = 0; x < SCREEN_WIDTH; x++) {
+                const rayAngle = playerAngle + Math.atan2(x - SCREEN_WIDTH / 2, SCREEN_WIDTH / (2 * Math.tan(HALF_FOV)));
+                const { dist, side, textureId, wallX } = castRay(rayAngle);
+                
+                if (dist < MAX_DEPTH) {
+                    // Correction for fisheye effect
+                    const correctedDist = dist * Math.cos(playerAngle - rayAngle);
+                    
+                    // Wall height
+                    const wallHeight = Math.min(SCREEN_HEIGHT / correctedDist, SCREEN_HEIGHT * 2);
+                    
+                    // Select texture with bounds check
+                    const textureIdClamped = Math.min(Math.max(0, textureId), wallTextures.length - 1);
+                    const texture = wallTextures[textureIdClamped];
+                    
+                    // Draw textured column
+                    const texX = Math.floor(wallX * TEXTURE_SIZE);
+                    
+                    if (wallHeight > 0 && texX >= 0 && texX < TEXTURE_SIZE) {
+                        ctx.imageSmoothingEnabled = false; // Keep pixelated look for walls
+                        ctx.drawImage(
+                            texture,
+                            texX, 0, 1, TEXTURE_SIZE,
+                            x, (SCREEN_HEIGHT - wallHeight) / 2, 1, wallHeight
+                        );
+                        
+                        // Update Z-buffer for walls
+                        if (x >= 0 && x < SCREEN_WIDTH) {
+                            zBuffer[x] = dist;
+                        }
+                    }
+                    
+                    // Add shadow for depth
+                    if (side === 1) {
+                        ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
+                        ctx.fillRect(x, (SCREEN_HEIGHT - wallHeight) / 2, 1, wallHeight);
+                    }
+                }
+            }
+        }
+
+        // Render floor (OPTIMIZED VERSION)
+        function renderFloor() {
+            // Use pre-rendered floor pattern
+            if (!floorPattern) {
+                floorPattern = generateFloorPattern();
+            }
+            
+            // Simply fill the floor area with the pattern
+            ctx.fillStyle = floorPattern;
+            ctx.fillRect(0, HALF_HEIGHT, SCREEN_WIDTH, HALF_HEIGHT);
+        }
+
+        // Render ceiling
+        function renderCeiling() {
+            // Different sky types based on level
+            let ceilingColor;
+            if (skyType === "SKY") {
+                ceilingColor = 'rgb(120, 120, 200)';  // Blue sky
+                
+                // Clouds
+                for (let i = 0; i < 20; i++) {
+                    const x = Math.floor(Math.random() * SCREEN_WIDTH);
+                    const y = Math.floor(Math.random() * (HALF_HEIGHT / 3));
+                    const size = Math.floor(Math.random() * 20) + 10;
+                    
+                    ctx.fillStyle = 'rgb(200, 200, 220)';
+                    ctx.beginPath();
+                    ctx.arc(x, y, size, 0, Math.PI * 2);
+                    ctx.fill();
+                    
+                    ctx.beginPath();
+                    ctx.arc(x + 15, y - 5, size - 5, 0, Math.PI * 2);
+                    ctx.fill();
+                    
+                    ctx.beginPath();
+                    ctx.arc(x - 15, y + 5, size - 5, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            } else {  // COSMOS
+                ceilingColor = 'rgb(10, 10, 40)';  // Dark blue sky
+                
+                // Stars
+                for (let i = 0; i < 100; i++) {
+                    const x = Math.floor(Math.random() * SCREEN_WIDTH);
+                    const y = Math.floor(Math.random() * (HALF_HEIGHT / 2));
+                    const size = Math.floor(Math.random() * 2) + 1;
+                    const brightness = Math.floor(Math.random() * 105) + 150;
+                    
+                    ctx.fillStyle = `rgb(${brightness}, ${brightness}, ${brightness})`;
+                    ctx.fillRect(x, y, size, size);
+                }
+            }
+            
+            // Draw ceiling
+            ctx.fillStyle = ceilingColor;
+            ctx.fillRect(0, 0, SCREEN_WIDTH, HALF_HEIGHT);
+        }
+
+        // Render weapon
+        function renderWeapon() {
+            const weaponSize = 200;
+            const drawX = SCREEN_WIDTH / 2 - weaponSize / 2;
+            const drawY = SCREEN_HEIGHT - weaponSize;
+            
+            ctx.drawImage(weaponTexture, 0, 0, weaponTexture.width, weaponTexture.height, 
+                         drawX, drawY, weaponSize, weaponSize);
+        }
+
+        // Render HUD with level info
+        function renderHUD() {
+            // Health bar
+            ctx.fillStyle = 'rgb(50, 50, 50)';
+            ctx.fillRect(10, 10, 204, 24);
+            
+            const healthColor = playerHealth < 30 ? 'rgb(255, 0, 0)' : 'rgb(0, 255, 0)';
+            ctx.fillStyle = healthColor;
+            ctx.fillRect(12, 12, 2 * playerHealth, 20);
+            
+            // Health text
+            ctx.fillStyle = 'white';
+            ctx.font = '16px Arial';
+            ctx.fillText(`HP: ${playerHealth}`, 220, 26);
+            
+            // Score, ammo, level and enemies
+            ctx.fillText(`Score: ${playerScore}`, SCREEN_WIDTH - 150, 20);
+            ctx.fillText(`Ammo: ${playerAmmo}`, SCREEN_WIDTH - 150, 50);
+            ctx.fillText(`Level: ${currentLevel}`, SCREEN_WIDTH - 150, 80);
+            
+            const activeEnemies = entities.filter(e => (e.type === "enemy" || e.type === "pluyabob") && e.active).length;
+            ctx.fillText(`Enemies: ${activeEnemies}/${totalEnemies}`, SCREEN_WIDTH - 150, 110);
+            ctx.fillText(`Sky: ${skyType}`, SCREEN_WIDTH - 150, 140);
+            
+            // Crosshair
+            ctx.strokeStyle = 'rgb(255, 0, 0)';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(SCREEN_WIDTH/2 - 10, SCREEN_HEIGHT/2);
+            ctx.lineTo(SCREEN_WIDTH/2 + 10, SCREEN_HEIGHT/2);
+            ctx.stroke();
+            
+            ctx.beginPath();
+            ctx.moveTo(SCREEN_WIDTH/2, SCREEN_HEIGHT/2 - 10);
+            ctx.lineTo(SCREEN_WIDTH/2, SCREEN_HEIGHT/2 + 10);
+            ctx.stroke();
+        }
+
+        // Render minimap
+        function renderMinimap() {
+            const mapSurfaceSize = 150;
+            const mapSurface = document.createElement('canvas');
+            mapSurface.width = mapSurfaceSize;
+            mapSurface.height = mapSurfaceSize;
+            const mapCtx = mapSurface.getContext('2d');
+            
+            // Semi-transparent background
+            mapCtx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+            mapCtx.fillRect(0, 0, mapSurfaceSize, mapSurfaceSize);
+            
+            const cellSize = mapSurfaceSize / MAP_SIZE;
+            
+            // Draw map
+            for (let x = 0; x < MAP.length; x++) {
+                for (let y = 0; y < MAP[x].length; y++) {
+                    if (MAP[x][y] > 0) {
+                        mapCtx.fillStyle = 'rgb(100, 100, 100)';
+                        mapCtx.fillRect(y * cellSize, x * cellSize, cellSize, cellSize);
+                    }
+                }
+            }
+            
+            // Draw player on minimap
+            const playerMapX = playerPos[1] * cellSize;
+            const playerMapY = playerPos[0] * cellSize;
+            mapCtx.fillStyle = 'rgb(0, 255, 0)';
+            mapCtx.beginPath();
+            mapCtx.arc(playerMapX, playerMapY, 3, 0, Math.PI * 2);
+            mapCtx.fill();
+            
+            // Draw player direction
+            const endX = playerMapX + Math.cos(playerAngle) * 10;
+            const endY = playerMapY + Math.sin(playerAngle) * 10;
+            mapCtx.strokeStyle = 'rgb(255, 0, 0)';
+            mapCtx.lineWidth = 2;
+            mapCtx.beginPath();
+            mapCtx.moveTo(playerMapX, playerMapY);
+            mapCtx.lineTo(endX, endY);
+            mapCtx.stroke();
+            
+            // Draw entities on minimap
+            for (const entity of [...entities, ...bullets]) {
+                if (entity.active) {
+                    const entityMapX = entity.pos[1] * cellSize;
+                    const entityMapY = entity.pos[0] * cellSize;
+                    
+                    let color;
+                    if (entity.type === "enemy") {
+                        color = 'rgb(255, 0, 0)';
+                    } else if (entity.type === "pluyabob") {
+                        color = 'rgb(0, 0, 255)';
+                    } else if (entity.type === "bullet") {
+                        if (entity.damage > 0) {
+                            color = 'rgb(255, 100, 0)';
+                        } else {
+                            color = 'rgb(255, 255, 0)';
+                        }
+                    } else if (entity.type === "item") {
+                        color = 'rgb(0, 255, 0)';
+                    } else {
+                        color = 'rgb(200, 200, 0)';
+                    }
+                    
+                    let size = 2;
+                    if (entity.type === "bullet") {
+                        size = 1;
+                    }
+                    
+                    mapCtx.fillStyle = color;
+                    mapCtx.beginPath();
+                    mapCtx.arc(entityMapX, entityMapY, size, 0, Math.PI * 2);
+                    mapCtx.fill();
+                }
+            }
+            
+            // Draw minimap to screen
+            ctx.drawImage(mapSurface, SCREEN_WIDTH - mapSurfaceSize - 10, SCREEN_HEIGHT - mapSurfaceSize - 10);
+        }
+
+        // Check if level is complete
+        function checkLevelComplete() {
+            const activeEnemies = entities.filter(e => (e.type === "enemy" || e.type === "pluyabob") && e.active).length;
+            return activeEnemies === 0;
+        }
+
+        // Advance to next level
+        function nextLevel() {
+            currentLevel++;
+            enemiesKilled = 0;
+            bullets = [];  // Clear bullets
+            
+            // Determine sky type (changes every 5 levels)
+            if (currentLevel % 5 === 0) {
+                skyType = skyType === "SKY" ? "COSMOS" : "SKY";
+            } else if (currentLevel === 1) {
+                skyType = "SKY";  // First level is sky
+            }
+            
+            // Generate new map
+            MAP = generateProceduralMap(MAP_SIZE, MAP_SIZE, Math.floor(Math.random() * 1000), currentLevel);
+            
+            // Find safe starting position
+            while (true) {
+                const startX = Math.floor(Math.random() * (MAP.length - 2)) + 1;
+                const startY = Math.floor(Math.random() * (MAP[0].length - 2)) + 1;
+                if (MAP[startX][startY] === 0) {
+                    playerPos = [startX + 0.5, startY + 0.5];
+                    break;
+                }
+            }
+            
+            playerAngle = 0.0;
+            playerAmmo = 30;
+            playerHealth = 100;  // Restore health
+            
+            // Generate new entities
+            const result = generateEntities(MAP, 8 + currentLevel * 2, currentLevel);
+            entities = result.entities;
+            totalEnemies = result.enemyCount;
+            
+            // Play level up sound
+            playSound('level_up');
+            
+            levelComplete = false;
+            document.getElementById('nextLevelBtn').style.display = 'none';
+        }
+
+        // Restart the entire game
+        function restartGame() {
+            currentLevel = 1;
+            enemiesKilled = 0;
+            playerHealth = 100;
+            playerScore = 0;
+            playerAmmo = 30;
+            bullets = [];
+            skyType = "SKY";
+            
+            // Generate new map
+            MAP = generateProceduralMap(MAP_SIZE, MAP_SIZE, Math.floor(Math.random() * 1000), currentLevel);
+            
+            // Find safe starting position
+            while (true) {
+                const startX = Math.floor(Math.random() * (MAP.length - 2)) + 1;
+                const startY = Math.floor(Math.random() * (MAP[0].length - 2)) + 1;
+                if (MAP[startX][startY] === 0) {
+                    playerPos = [startX + 0.5, startY + 0.5];
+                    break;
+                }
+            }
+            
+            playerAngle = 0.0;
+            
+            // Generate new entities
+            const result = generateEntities(MAP, 8 + currentLevel * 2, currentLevel);
+            entities = result.entities;
+            totalEnemies = result.enemyCount;
+        }
+
+        // Restart current level
+        function restartLevel() {
+            enemiesKilled = 0;
+            bullets = [];
+            
+            // Generate new map for current level
+            MAP = generateProceduralMap(MAP_SIZE, MAP_SIZE, Math.floor(Math.random() * 1000), currentLevel);
+            
+            // Find safe starting position
+            while (true) {
+                const startX = Math.floor(Math.random() * (MAP.length - 2)) + 1;
+                const startY = Math.floor(Math.random() * (MAP[0].length - 2)) + 1;
+                if (MAP[startX][startY] === 0) {
+                    playerPos = [startX + 0.5, startY + 0.5];
+                    break;
+                }
+            }
+            
+            playerAngle = 0.0;
+            playerAmmo = 30;
+            
+            // Generate new entities
+            const result = generateEntities(MAP, 8 + currentLevel * 2, currentLevel);
+            entities = result.entities;
+            totalEnemies = result.enemyCount;
+        }
+
+        // Shoot a bullet
+        function shootBullet() {
+            if (playerAmmo > 0) {
+                playerAmmo--;
+                playSound('shot');
+                
+                // Create a bullet
+                const bulletDir = [Math.cos(playerAngle), Math.sin(playerAngle)];
+                const bulletTexture = generateEntityTexture(TEXTURE_SIZE, "bullet");
+                const bullet = new Entity(playerPos[0], playerPos[1], "bullet", bulletTexture);
+                bullet.velocity = [bulletDir[0] * 0.2, bulletDir[1] * 0.2];
+                bullets.push(bullet);
+            }
+        }
+
+        // Render level complete screen
+        function renderLevelComplete() {
+            // Semi-transparent overlay
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+            ctx.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+            
+            // Level complete text
+            ctx.fillStyle = 'rgb(255, 215, 0)';
+            ctx.font = 'bold 48px Arial';
+            const levelText = `LEVEL ${currentLevel} COMPLETE!`;
+            const textWidth = ctx.measureText(levelText).width;
+            ctx.fillText(levelText, (SCREEN_WIDTH - textWidth) / 2, SCREEN_HEIGHT / 2 - 50);
+            
+            // Continue text
+            ctx.fillStyle = 'white';
+            ctx.font = '24px Arial';
+            const continueText = 'Press SPACE to continue';
+            const continueWidth = ctx.measureText(continueText).width;
+            ctx.fillText(continueText, (SCREEN_WIDTH - continueWidth) / 2, SCREEN_HEIGHT / 2 + 50);
+        }
+
+        // Render main menu
+        function renderMainMenu() {
+            ctx.fillStyle = 'black';
+            ctx.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+            
+            // Title
+            ctx.fillStyle = 'rgb(255, 100, 100)';
+            ctx.font = 'bold 80px Arial';
+            const titleText = "FOXEN3D";
+            const titleWidth = ctx.measureText(titleText).width;
+            ctx.fillText(titleText, (SCREEN_WIDTH - titleWidth) / 2, 100);
+            
+            // Buttons
+            ctx.fillStyle = 'rgb(50, 50, 50)';
+            ctx.fillRect(SCREEN_WIDTH/2 - 100, 250, 200, 60);
+            ctx.fillRect(SCREEN_WIDTH/2 - 100, 350, 200, 60);
+            
+            ctx.fillStyle = 'white';
+            ctx.font = '50px Arial';
+            ctx.fillText("PLAY", SCREEN_WIDTH/2 - 45, 290);
+            ctx.fillText("EXIT", SCREEN_WIDTH/2 - 45, 390);
+            
+            return [
+                {x: SCREEN_WIDTH/2 - 100, y: 250, width: 200, height: 60},
+                {x: SCREEN_WIDTH/2 - 100, y: 350, width: 200, height: 60}
+            ];
+        }
+
+        // Render pause menu
+        function renderPauseMenu() {
+            // Semi-transparent overlay
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+            ctx.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+            
+            // Paused text
+            ctx.fillStyle = 'white';
+            ctx.font = 'bold 72px Arial';
+            const titleText = "PAUSED";
+            const titleWidth = ctx.measureText(titleText).width;
+            ctx.fillText(titleText, (SCREEN_WIDTH - titleWidth) / 2, 100);
+            
+            // Buttons
+            ctx.fillStyle = 'rgb(50, 50, 50)';
+            ctx.fillRect(SCREEN_WIDTH/2 - 150, 200, 300, 60);
+            ctx.fillRect(SCREEN_WIDTH/2 - 150, 280, 300, 60);
+            ctx.fillRect(SCREEN_WIDTH/2 - 150, 360, 300, 60);
+            
+            ctx.fillStyle = 'white';
+            ctx.font = '50px Arial';
+            ctx.fillText("RESUME", SCREEN_WIDTH/2 - 75, 240);
+            ctx.fillText("RESTART LEVEL", SCREEN_WIDTH/2 - 145, 320);
+            ctx.fillText("MAIN MENU", SCREEN_WIDTH/2 - 120, 400);
+            
+            return [
+                {x: SCREEN_WIDTH/2 - 150, y: 200, width: 300, height: 60},
+                {x: SCREEN_WIDTH/2 - 150, y: 280, width: 300, height: 60},
+                {x: SCREEN_WIDTH/2 - 150, y: 360, width: 300, height: 60}
+            ];
+        }
+
+        // Render game screen
+        function renderGame() {
+            ctx.fillStyle = 'black';
+            ctx.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+            
+            renderCeiling();
+            renderFloor();  // Now using optimized version
+            renderWalls();
+            renderEntities();
+            renderWeapon();
+            renderHUD();
+            renderMinimap();
+            
+            // Check if level is complete
+            if (checkLevelComplete() && !levelComplete) {
+                levelComplete = true;
+                document.getElementById('nextLevelBtn').style.display = 'inline-block';
+            }
+            
+            if (levelComplete) {
+                renderLevelComplete();
+            }
+            
+            // Update UI elements
+            document.getElementById('health').textContent = playerHealth;
+            document.getElementById('score').textContent = playerScore;
+            document.getElementById('ammo').textContent = playerAmmo;
+            document.getElementById('level').textContent = currentLevel;
+            
+            return levelComplete;
+        }
+
+        // Handle keyboard input
+        const keys = {};
+        
+        window.addEventListener('keydown', (e) => {
+            keys[e.key] = true;
+            
+            if (gameState === MAIN_MENU) {
+                // In main menu, ESC does nothing
+            } else if (gameState === PLAYING) {
+                if (levelComplete) {
+                    if (e.key === ' ') {
+                        nextLevel();
+                    }
+                } else {
+                    if (e.key === ' ') {
+                        shootBullet();
+                    } else if (e.key === 'r' || e.key === 'R') {
+                        // Reload
+                        if (playerAmmo < 30) {
+                            playerAmmo = 30;
+                            playSound('pickup');
+                        }
+                    } else if (e.key === 'Escape') {
+                        gameState = PAUSED;
+                    }
+                }
+            } else if (gameState === PAUSED) {
+                if (e.key === 'Escape') {
+                    gameState = PLAYING;
+                }
+            } else if (gameState === GAME_OVER) {
+                if (e.key === 'r' || e.key === 'R') {
+                    gameState = PLAYING;
+                    restartGame();
+                } else if (e.key === 'Escape') {
+                    gameState = MAIN_MENU;
+                    currentMusicPattern = menuMusic;
+                }
+            }
+        });
+        
+        window.addEventListener('keyup', (e) => {
+            keys[e.key] = false;
+        });
+
+        // Handle mouse clicks
+        window.addEventListener('click', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            const mouseY = e.clientY - rect.top;
+            
+            if (gameState === MAIN_MENU) {
+                const buttons = renderMainMenu();
+                if (mouseX >= buttons[0].x && mouseX <= buttons[0].x + buttons[0].width &&
+                    mouseY >= buttons[0].y && mouseY <= buttons[0].y + buttons[0].height) {
+                    gameState = PLAYING;
+                    currentMusicPattern = gameMusic;
+                    currentNote = 0;
+                    lastNoteTime = performance.now();
+                    restartGame();
+                } else if (mouseX >= buttons[1].x && mouseX <= buttons[1].x + buttons[1].width &&
+                          mouseY >= buttons[1].y && mouseY <= buttons[1].y + buttons[1].height) {
+                    // Exit button - do nothing in browser
+                }
+            } else if (gameState === PAUSED) {
+                const buttons = renderPauseMenu();
+                if (mouseX >= buttons[0].x && mouseX <= buttons[0].x + buttons[0].width &&
+                    mouseY >= buttons[0].y && mouseY <= buttons[0].y + buttons[0].height) {
+                    gameState = PLAYING;
+                } else if (mouseX >= buttons[1].x && mouseX <= buttons[1].x + buttons[1].width &&
+                          mouseY >= buttons[1].y && mouseY <= buttons[1].y + buttons[1].height) {
+                    gameState = PLAYING;
+                    restartLevel();
+                } else if (mouseX >= buttons[2].x && mouseX <= buttons[2].x + buttons[2].width &&
+                          mouseY >= buttons[2].y && mouseY <= buttons[2].y + buttons[2].height) {
+                    gameState = MAIN_MENU;
+                    currentMusicPattern = menuMusic;
+                    currentNote = 0;
+                    lastNoteTime = performance.now();
+                }
+            }
+        });
+
+        // Game loop with FPS control
+        function gameLoop(timestamp) {
+            if (!gameRunning) return;
+            
+            // Calculate time since last frame
+            const deltaTime = timestamp - lastFrameTime;
+            const frameInterval = 1000 / fpsLimit;
+            
+            // Only update if enough time has passed
+            if (deltaTime >= frameInterval) {
+                lastFrameTime = timestamp - (deltaTime % frameInterval);
+                
+                // Play music
+                playMusic(timestamp);
+                
+                if (gameState === MAIN_MENU) {
+                    renderMainMenu();
+                    
+                } else if (gameState === PLAYING) {
+                    if (!levelComplete) {
+                        // Rotation
+                        if (keys['ArrowLeft']) {
+                            playerAngle -= ROTATION_SPEED;
+                        }
+                        if (keys['ArrowRight']) {
+                            playerAngle += ROTATION_SPEED;
+                        }
+                        
+                        // Movement
+                        const moveVec = [
+                            Math.cos(playerAngle) * MOVE_SPEED,
+                            Math.sin(playerAngle) * MOVE_SPEED
+                        ];
+                        
+                        const strafeVec = [
+                            Math.cos(playerAngle + Math.PI/2) * MOVE_SPEED,
+                            Math.sin(playerAngle + Math.PI/2) * MOVE_SPEED
+                        ];
+                        
+                        let moved = false;
+                        
+                        // Forward/backward movement
+                        if (keys['ArrowUp'] || keys['w'] || keys['W']) {
+                            const newPos = [playerPos[0] + moveVec[0], playerPos[1] + moveVec[1]];
+                            if (newPos[0] >= 0 && newPos[0] < MAP.length && 
+                                newPos[1] >= 0 && newPos[1] < MAP[0].length) {
+                                if (MAP[Math.floor(newPos[0])][Math.floor(newPos[1])] === 0) {
+                                    playerPos = newPos;
+                                    moved = true;
+                                }
+                            }
+                        }
+                        
+                        if (keys['ArrowDown'] || keys['s'] || keys['S']) {
+                            const newPos = [playerPos[0] - moveVec[0], playerPos[1] - moveVec[1]];
+                            if (newPos[0] >= 0 && newPos[0] < MAP.length && 
+                                newPos[1] >= 0 && newPos[1] < MAP[0].length) {
+                                if (MAP[Math.floor(newPos[0])][Math.floor(newPos[1])] === 0) {
+                                    playerPos = newPos;
+                                    moved = true;
+                                }
+                            }
+                        }
+                        
+                        // Strafe movement
+                        if (keys['a'] || keys['A']) {
+                            const newPos = [playerPos[0] - strafeVec[0], playerPos[1] - strafeVec[1]];
+                            if (newPos[0] >= 0 && newPos[0] < MAP.length && 
+                                newPos[1] >= 0 && newPos[1] < MAP[0].length) {
+                                if (MAP[Math.floor(newPos[0])][Math.floor(newPos[1])] === 0) {
+                                    playerPos = newPos;
+                                    moved = true;
+                                }
+                            }
+                        }
+                        
+                        if (keys['d'] || keys['D']) {
+                            const newPos = [playerPos[0] + strafeVec[0], playerPos[1] + strafeVec[1]];
+                            if (newPos[0] >= 0 && newPos[0] < MAP.length && 
+                                newPos[1] >= 0 && newPos[1] < MAP[0].length) {
+                                if (MAP[Math.floor(newPos[0])][Math.floor(newPos[1])] === 0) {
+                                    playerPos = newPos;
+                                    moved = true;
+                                }
+                            }
+                        }
+                        
+                        // Play step sounds
+                        if (moved && timestamp - lastStepTime > stepInterval) {
+                            playSound('step');
+                            lastStepTime = timestamp;
+                        }
+                        
+                        // Update entities
+                        for (const entity of [...entities, ...bullets]) {
+                            const result = entity.update(playerPos, timestamp, bullets, entities, MAP);
+                            
+                            if (result === true && entity.type === "enemy") {  // Enemy attacked
+                                if (timestamp - lastEnemyAttackTime > enemyAttackCooldown) {
+                                    playerHealth -= entity.damage;
+                                    lastEnemyAttackTime = timestamp;
+                                    playSound('hit');
+                                }
+                            } else if (result === "player_hit") {  // Bullet hit player
+                                playerHealth -= 10;
+                                playSound('hit');
+                            } else if (result instanceof Entity) {  // Bullet hit enemy
+                                if (result.type === "enemy" || result.type === "pluyabob") {
+                                    enemiesKilled++;
+                                    playerScore += 100;
+                                    playSound('hit');
+                                }
+                            }
+                            
+                            // Pick up items
+                            if (entity.active && entity.type === "item" && entity.distanceToPlayer(playerPos) < 1.0) {
+                                entity.active = false;
+                                playerScore += 50;
+                                playerHealth = Math.min(100, playerHealth + 20);
+                                playerAmmo = Math.min(30, playerAmmo + 10);
+                                playSound('pickup');
+                            }
+                        }
+                        
+                        // Remove inactive bullets
+                        bullets = bullets.filter(bullet => bullet.active);
+                        
+                        // Check player death
+                        if (playerHealth <= 0) {
+                            gameState = GAME_OVER;
+                        }
+                    }
+                    
+                    // Render game
+                    renderGame();
+                    
+                } else if (gameState === PAUSED) {
+                    // Render game behind pause menu
+                    renderGame();
+                    renderPauseMenu();
+                    
+                } else if (gameState === GAME_OVER) {
+                    // Game Over screen
+                    ctx.fillStyle = 'black';
+                    ctx.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+                    
+                    ctx.fillStyle = 'rgb(255, 0, 0)';
+                    ctx.font = 'bold 72px Arial';
+                    const gameOverText = "GAME OVER";
+                    const gameOverWidth = ctx.measureText(gameOverText).width;
+                    ctx.fillText(gameOverText, (SCREEN_WIDTH - gameOverWidth) / 2, SCREEN_HEIGHT / 2 - 50);
+                    
+                    ctx.fillStyle = 'white';
+                    ctx.font = '36px Arial';
+                    const scoreText = `Final Score: ${playerScore}`;
+                    const scoreWidth = ctx.measureText(scoreText).width;
+                    ctx.fillText(scoreText, (SCREEN_WIDTH - scoreWidth) / 2, SCREEN_HEIGHT / 2 + 20);
+                    
+                    const restartText = "Press R to restart or ESC for main menu";
+                    const restartWidth = ctx.measureText(restartText).width;
+                    ctx.fillText(restartText, (SCREEN_WIDTH - restartWidth) / 2, SCREEN_HEIGHT / 2 + 70);
+                }
+            }
+            
+            // Continue game loop
+            animationId = requestAnimationFrame(gameLoop);
+        }
+
+        // Initialize game
+        function init() {
+            canvas = document.getElementById('gameCanvas');
+            ctx = canvas.getContext('2d');
+            
+            // Initialize audio
+            initAudio();
+            
+            // Set up button handlers
+            document.getElementById('startBtn').addEventListener('click', startGame);
+            document.getElementById('stopBtn').addEventListener('click', stopGame);
+            document.getElementById('reloadBtn').addEventListener('click', reloadGame);
+            document.getElementById('nextLevelBtn').addEventListener('click', nextLevel);
+            document.getElementById('pauseBtn').addEventListener('click', togglePause);
+            document.getElementById('applyFpsBtn').addEventListener('click', applyFps);
+            
+            // Initial render
+            renderMainMenu();
+        }
+
+        // Start game function
+        function startGame() {
+            if (!gameRunning) {
+                gameRunning = true;
+                musicPlaying = true;
+                lastFrameTime = performance.now();
+                animationId = requestAnimationFrame(gameLoop);
+            }
+        }
+
+        // Stop game function
+        function stopGame() {
+            gameRunning = false;
+            musicPlaying = false;
+            if (animationId) {
+                cancelAnimationFrame(animationId);
+            }
+        }
+
+        // Reload game function
+        function reloadGame() {
+            stopGame();
+            
+            // Reset game state
+            gameState = PLAYING;
+            currentLevel = 1;
+            enemiesKilled = 0;
+            playerPos = [1.5, 1.5];
+            playerAngle = 0.0;
+            playerHealth = 100;
+            playerScore = 0;
+            playerAmmo = 30;
+            levelComplete = false;
+            bullets = [];
+            skyType = "SKY";
+            
+            // Generate new map and entities
+            MAP = generateProceduralMap(MAP_SIZE, MAP_SIZE, Math.floor(Math.random() * 1000), currentLevel);
+            const result = generateEntities(MAP, 8 + currentLevel * 2, currentLevel);
+            entities = result.entities;
+            totalEnemies = result.enemyCount;
+            
+            document.getElementById('nextLevelBtn').style.display = 'none';
+            
+            // Initial render
+            renderGame();
+        }
+
+        // Toggle pause
+        function togglePause() {
+            if (gameState === PLAYING) {
+                gameState = PAUSED;
+            } else if (gameState === PAUSED) {
+                gameState = PLAYING;
+            }
+        }
+
+        // Apply FPS limit
+        function applyFps() {
+            const fpsInput = document.getElementById('fpsInput');
+            const newFps = parseInt(fpsInput.value);
+            
+            if (newFps >= 1 && newFps <= 120) {
+                fpsLimit = newFps;
+            } else {
+                alert('Please enter a valid FPS value between 1 and 120');
+                fpsInput.value = fpsLimit;
+            }
+        }
+
+        // Initialize when page loads
+        window.addEventListener('load', init);
+    </script>
+</body>
+</html>
