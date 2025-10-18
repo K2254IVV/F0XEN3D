@@ -1,4 +1,5 @@
 # F0XEN3D
+![alt text]([http://url/to/img.png](https://i.ibb.co/fVtTV4qF/Screenshot-20251018-164655.png))
 The World's Smallest 3D Game (smaller than .kkrieger by ~2 times)
 
 ## ALPHA VERSIONS (LOSTMEDIA):
@@ -17,3 +18,6 @@ v0.4 - 48.4 KiB smaller than .kkrieger by 1.9 times
 
 v0.5.0 (UNPLAYABLE) - 43.7 KiB smaller than .kkrieger by 2.1 times
 
+v0.5.0 (FIXED) (laggy) - 43.9 KiB smaller than .kkrieger by 2.1 times
+
+v0.5.1 - 
