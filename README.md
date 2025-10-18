@@ -41,9 +41,9 @@ alphalastest (ALPHABUILD) - 25.1 KiB   smaller than .kkrieger by 3.7 times
 
 ## RELEASE VERSIONS:
 
-v0.1 - ??? KiB smaller than .kkrieger by 3.5 times
+v0.1 - 43.5 KiB smaller than .kkrieger by 2.1 times
 
-v0.2 - ??? KiB smaller than .kkrieger by 3 times
+v0.2 - 48.8 KiB smaller than .kkrieger by 1.9 times
 
 v0.3 (UNPLAYABLE) - Skipped
 
