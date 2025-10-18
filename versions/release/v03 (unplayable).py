@@ -19,7 +19,7 @@ ROTATION_SPEED = 0.1
 
 # Создание экрана
 screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-pygame.display.set_caption("Foxenstein3D - v0.3 (UNPLAYABLE)")
+pygame.display.set_caption("Foxen3D - v0.3 (UNPLAYABLE)")
 clock = pygame.time.Clock()
 
 # Состояния игры
