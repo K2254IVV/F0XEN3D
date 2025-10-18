@@ -1,5 +1,5 @@
 # F0XEN3D
-![alt text][https://i.ibb.co/fVtTV4qF/Screenshot-20251018-164655.png]
+![screenshoot](https://i.ibb.co/fVtTV4qF/Screenshot-20251018-164655.png)
 The World's Smallest 3D Game (smaller than .kkrieger by ~2 times)
 
 ## ALPHA VERSIONS (LOSTMEDIA):
