@@ -1,0 +1,668 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Foxen3D JavaScript</title>
+</head>
+<body>
+    <canvas id="gameCanvas" width="800" height="600"></canvas>
+    <div>
+        <button id="startBtn">Start Game</button>
+        <button id="stopBtn">Stop Game</button>
+    </div>
+    <div>
+        <label for="fpsInput">FPS Limit:</label>
+        <input type="number" id="fpsInput" value="60" min="1" max="120">
+        <button id="applyFpsBtn">Apply</button>
+    </div>
+    <div>
+        <p>Controls: Arrow Keys to move, Space to interact/shoot</p>
+    </div>
+
+    <script>
+        // Game constants
+        const SCREEN_WIDTH = 800;
+        const SCREEN_HEIGHT = 600;
+        const HALF_HEIGHT = SCREEN_HEIGHT / 2;
+        const FOV = Math.PI / 3;
+        const HALF_FOV = FOV / 2;
+        const MAX_DEPTH = 20;
+        const MOVE_SPEED = 0.1;
+        const ROTATION_SPEED = 0.1;
+        const TEXTURE_SIZE = 64;
+
+        // Game state
+        let canvas, ctx;
+        let gameRunning = false;
+        let animationId;
+        let fpsLimit = 60;
+        let lastFrameTime = 0;
+
+        // Player state
+        let playerPos = [1.5, 1.5];
+        let playerAngle = 0.0;
+        let playerHealth = 100;
+        let playerScore = 0;
+
+        // Map (0 - empty, 1-3 - walls with different textures)
+        const MAP = [
+            [1, 1, 1, 1, 1, 1, 1],
+            [1, 0, 0, 2, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 1],
+            [1, 0, 0, 3, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 1],
+            [1, 1, 1, 1, 1, 1, 1]
+        ];
+
+        // Generate wall texture (in original Wolfenstein style)
+        function generateWallTexture(size = TEXTURE_SIZE, colorVariation = 30) {
+            const texture = document.createElement('canvas');
+            texture.width = size;
+            texture.height = size;
+            const textureCtx = texture.getContext('2d');
+            const imageData = textureCtx.createImageData(size, size);
+            const data = imageData.data;
+            
+            const baseColor = [
+                Math.floor(Math.random() * 50) + 150,
+                Math.floor(Math.random() * 50) + 100,
+                Math.floor(Math.random() * 50) + 50
+            ];
+            
+            for (let y = 0; y < size; y++) {
+                for (let x = 0; x < size; x++) {
+                    // Create brick pattern
+                    const brickX = x % 16;
+                    const brickY = y % 16;
+                    
+                    let color;
+                    
+                    // Brick borders
+                    if (brickX === 0 || brickY === 0 || brickX === 15 || brickY === 15) {
+                        color = [
+                            Math.max(0, baseColor[0] - 50),
+                            Math.max(0, baseColor[1] - 50),
+                            Math.max(0, baseColor[2] - 50)
+                        ];
+                    } else {
+                        // Color variation inside brick
+                        const variation = Math.floor(Math.random() * (colorVariation * 2 + 1)) - colorVariation;
+                        color = [
+                            Math.max(0, Math.min(255, baseColor[0] + variation)),
+                            Math.max(0, Math.min(255, baseColor[1] + variation)),
+                            Math.max(0, Math.min(255, baseColor[2] + variation))
+                        ];
+                    }
+                    
+                    // Add noise
+                    if (Math.random() < 0.1) {
+                        const noise = Math.floor(Math.random() * 41) - 20;
+                        color = [
+                            Math.max(0, Math.min(255, color[0] + noise)),
+                            Math.max(0, Math.min(255, color[1] + noise)),
+                            Math.max(0, Math.min(255, color[2] + noise))
+                        ];
+                    }
+                    
+                    const index = (y * size + x) * 4;
+                    data[index] = color[0];     // R
+                    data[index + 1] = color[1]; // G
+                    data[index + 2] = color[2]; // B
+                    data[index + 3] = 255;      // A
+                }
+            }
+            
+            textureCtx.putImageData(imageData, 0, 0);
+            return texture;
+        }
+
+        // Generate entity textures (enemies, items)
+        function generateEntityTexture(size = TEXTURE_SIZE, entityType = "enemy") {
+            const texture = document.createElement('canvas');
+            texture.width = size;
+            texture.height = size;
+            const ctx = texture.getContext('2d');
+            
+            // Clear with transparent background
+            ctx.clearRect(0, 0, size, size);
+            
+            if (entityType === "enemy") {
+                // Simple enemy sprite
+                const centerX = size / 2;
+                const centerY = size / 2;
+                
+                // Body
+                ctx.fillStyle = 'rgb(200, 50, 50)';
+                ctx.beginPath();
+                ctx.arc(centerX, centerY, 20, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // Head
+                ctx.fillStyle = 'rgb(150, 100, 100)';
+                ctx.beginPath();
+                ctx.arc(centerX, centerY - 10, 12, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // Eyes
+                ctx.fillStyle = 'rgb(255, 255, 255)';
+                ctx.beginPath();
+                ctx.arc(centerX - 5, centerY - 12, 4, 0, Math.PI * 2);
+                ctx.arc(centerX + 5, centerY - 12, 4, 0, Math.PI * 2);
+                ctx.fill();
+                
+                ctx.fillStyle = 'rgb(0, 0, 0)';
+                ctx.beginPath();
+                ctx.arc(centerX - 5, centerY - 12, 2, 0, Math.PI * 2);
+                ctx.arc(centerX + 5, centerY - 12, 2, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // Arms/legs
+                ctx.fillStyle = 'rgb(200, 50, 50)';
+                ctx.fillRect(centerX - 25, centerY, 50, 15);
+                
+            } else if (entityType === "item") {
+                // Item (health or ammo)
+                if (Math.random() < 0.5) {
+                    // Health pack
+                    ctx.fillStyle = 'rgb(255, 50, 50)';
+                    ctx.fillRect(20, 10, 24, 44);
+                    
+                    ctx.fillStyle = 'rgb(255, 255, 255)';
+                    ctx.fillRect(24, 14, 16, 36);
+                    
+                    ctx.fillStyle = 'rgb(255, 50, 50)';
+                    ctx.fillRect(28, 18, 8, 28);
+                } else {
+                    // Ammo
+                    ctx.fillStyle = 'rgb(200, 200, 50)';
+                    ctx.fillRect(15, 10, 34, 44);
+                    
+                    ctx.fillStyle = 'rgb(100, 100, 100)';
+                    for (let i = 0; i < 3; i++) {
+                        ctx.fillRect(20, 15 + i * 12, 24, 8);
+                    }
+                }
+                
+            } else if (entityType === "decor") {
+                // Decorative object (pillar, barrel)
+                ctx.fillStyle = 'rgb(150, 100, 50)';
+                ctx.fillRect(20, 10, 24, 54);
+                
+                ctx.fillStyle = 'rgb(100, 70, 30)';
+                for (let i = 0; i < 3; i++) {
+                    ctx.fillRect(22, 15 + i * 15, 20, 5);
+                }
+            }
+            
+            return texture;
+        }
+
+        // Create textures
+        const wallTextures = [
+            generateWallTexture(),
+            generateWallTexture(),
+            generateWallTexture()
+        ];
+        
+        const entityTextures = {
+            "enemy": generateEntityTexture(TEXTURE_SIZE, "enemy"),
+            "item": generateEntityTexture(TEXTURE_SIZE, "item"),
+            "decor": generateEntityTexture(TEXTURE_SIZE, "decor")
+        };
+
+        // Entity class
+        class Entity {
+            constructor(x, y, entityType, texture) {
+                this.pos = [x, y];
+                this.type = entityType;
+                this.texture = texture;
+                this.active = true;
+            }
+
+            update(playerPos) {
+                // Simple enemy logic - just stand in place for this demo
+            }
+
+            distanceToPlayer(playerPos) {
+                const dx = this.pos[0] - playerPos[0];
+                const dy = this.pos[1] - playerPos[1];
+                return Math.sqrt(dx * dx + dy * dy);
+            }
+        }
+
+        // Create entities
+        const entities = [
+            new Entity(2.5, 2.5, "enemy", entityTextures["enemy"]),
+            new Entity(1.5, 1.5, "item", entityTextures["item"]),
+            new Entity(4.5, 3.5, "item", entityTextures["item"]),
+            new Entity(3.5, 5.5, "decor", entityTextures["decor"]),
+            new Entity(5.5, 1.5, "decor", entityTextures["decor"])
+        ];
+
+        // Ray casting function
+        function castRay(angle) {
+            angle %= 2 * Math.PI;
+            
+            const rayDir = [Math.cos(angle), Math.sin(angle)];
+            const mapPos = [Math.floor(playerPos[0]), Math.floor(playerPos[1])];
+            
+            const deltaDist = [
+                Math.abs(1 / rayDir[0]),
+                Math.abs(1 / rayDir[1])
+            ];
+            
+            const step = [0, 0];
+            const sideDist = [0, 0];
+            
+            for (let i = 0; i < 2; i++) {
+                if (rayDir[i] < 0) {
+                    step[i] = -1;
+                    sideDist[i] = (playerPos[i] - mapPos[i]) * deltaDist[i];
+                } else {
+                    step[i] = 1;
+                    sideDist[i] = (mapPos[i] + 1 - playerPos[i]) * deltaDist[i];
+                }
+            }
+            
+            let hit = false;
+            let side = 0;
+            let textureId = 0;
+            
+            while (!hit && Math.max(Math.abs(mapPos[0] - Math.floor(playerPos[0])), 
+                                  Math.abs(mapPos[1] - Math.floor(playerPos[1]))) < MAX_DEPTH) {
+                if (sideDist[0] < sideDist[1]) {
+                    sideDist[0] += deltaDist[0];
+                    mapPos[0] += step[0];
+                    side = 0;
+                } else {
+                    sideDist[1] += deltaDist[1];
+                    mapPos[1] += step[1];
+                    side = 1;
+                }
+                
+                if (mapPos[0] >= 0 && mapPos[0] < MAP.length && 
+                    mapPos[1] >= 0 && mapPos[1] < MAP[0].length) {
+                    if (MAP[mapPos[0]][mapPos[1]] > 0) {
+                        hit = true;
+                        textureId = MAP[mapPos[0]][mapPos[1]] - 1;
+                    }
+                }
+            }
+            
+            if (hit) {
+                let perpDist;
+                if (side === 0) {
+                    perpDist = (mapPos[0] - playerPos[0] + (1 - step[0]) / 2) / rayDir[0];
+                } else {
+                    perpDist = (mapPos[1] - playerPos[1] + (1 - step[1]) / 2) / rayDir[1];
+                }
+                return { dist: perpDist, side, textureId, mapPos };
+            }
+            
+            return { dist: null, side: null, textureId: null, mapPos: null };
+        }
+
+        // Check if entity is visible
+        function isEntityVisible(entityPos) {
+            const dx = entityPos[0] - playerPos[0];
+            const dy = entityPos[1] - playerPos[1];
+            const distToEntity = Math.sqrt(dx * dx + dy * dy);
+            
+            if (distToEntity <= 0) return true;
+            
+            const rayDir = [dx / distToEntity, dy / distToEntity];
+            let mapX = Math.floor(playerPos[0]);
+            let mapY = Math.floor(playerPos[1]);
+            let rayX = playerPos[0];
+            let rayY = playerPos[1];
+            
+            const deltaDistX = Math.abs(1 / rayDir[0]);
+            const deltaDistY = Math.abs(1 / rayDir[1]);
+            
+            const stepX = rayDir[0] >= 0 ? 1 : -1;
+            const stepY = rayDir[1] >= 0 ? 1 : -1;
+            
+            let sideDistX, sideDistY;
+            if (rayDir[0] < 0) {
+                sideDistX = (rayX - mapX) * deltaDistX;
+            } else {
+                sideDistX = (mapX + 1 - rayX) * deltaDistX;
+            }
+            
+            if (rayDir[1] < 0) {
+                sideDistY = (rayY - mapY) * deltaDistY;
+            } else {
+                sideDistY = (mapY + 1 - rayY) * deltaDistY;
+            }
+            
+            let hit = false;
+            while (!hit && (Math.abs(rayX - playerPos[0]) + Math.abs(rayY - playerPos[1])) < distToEntity) {
+                if (sideDistX < sideDistY) {
+                    sideDistX += deltaDistX;
+                    mapX += stepX;
+                } else {
+                    sideDistY += deltaDistY;
+                    mapY += stepY;
+                }
+                
+                if (Math.abs(rayX - entityPos[0]) < 0.5 && Math.abs(rayY - entityPos[1]) < 0.5) {
+                    return true;
+                }
+                
+                if (mapX >= 0 && mapX < MAP.length && mapY >= 0 && mapY < MAP[0].length) {
+                    if (MAP[mapX][mapY] > 0) {
+                        return false;
+                    }
+                }
+                
+                if (sideDistX < sideDistY) {
+                    rayX = stepX === -1 ? mapX : mapX + 1;
+                } else {
+                    rayY = stepY === -1 ? mapY : mapY + 1;
+                }
+            }
+            
+            return true;
+        }
+
+        // Render entities
+        function renderEntities() {
+            const sortedEntities = [...entities].sort((a, b) => 
+                b.distanceToPlayer(playerPos) - a.distanceToPlayer(playerPos));
+            
+            for (const entity of sortedEntities) {
+                if (!entity.active) continue;
+                
+                if (!isEntityVisible(entity.pos)) continue;
+                
+                const entityDir = [entity.pos[0] - playerPos[0], entity.pos[1] - playerPos[1]];
+                let entityAngle = Math.atan2(entityDir[1], entityDir[0]) - playerAngle;
+                entityAngle = (entityAngle + Math.PI) % (2 * Math.PI) - Math.PI;
+                
+                if (Math.abs(entityAngle) < HALF_FOV + 0.2) {
+                    let dist = Math.sqrt(entityDir[0] * entityDir[0] + entityDir[1] * entityDir[1]);
+                    dist *= Math.cos(entityAngle);
+                    
+                    if (dist > 0.5) {
+                        const spriteHeight = Math.min(SCREEN_HEIGHT / dist, SCREEN_HEIGHT * 2);
+                        const spriteWidth = spriteHeight;
+                        
+                        const spriteScreenX = (SCREEN_WIDTH / 2) * (1 + entityAngle / HALF_FOV) - spriteWidth / 2;
+                        const spriteScreenY = (SCREEN_HEIGHT - spriteHeight) / 2;
+                        
+                        if (spriteWidth > 0 && spriteHeight > 0) {
+                            // Draw the entity texture with smoothing
+                            ctx.imageSmoothingEnabled = true;
+                            ctx.imageSmoothingQuality = 'high';
+                            ctx.drawImage(
+                                entity.texture, 
+                                0, 0, entity.texture.width, entity.texture.height,
+                                spriteScreenX, spriteScreenY, spriteWidth, spriteHeight
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // Render walls
+        function renderWalls() {
+            for (let x = 0; x < SCREEN_WIDTH; x++) {
+                const rayAngle = playerAngle + Math.atan2(x - SCREEN_WIDTH / 2, SCREEN_WIDTH / (2 * Math.tan(HALF_FOV)));
+                const { dist, side, textureId } = castRay(rayAngle);
+                
+                if (dist !== null) {
+                    // Correction for fisheye effect
+                    const correctedDist = dist * Math.cos(playerAngle - rayAngle);
+                    
+                    // Wall height
+                    const wallHeight = Math.min(SCREEN_HEIGHT / correctedDist, SCREEN_HEIGHT * 2);
+                    
+                    // Calculate texture coordinates
+                    let wallX;
+                    if (side === 0) {
+                        wallX = playerPos[1] + dist * Math.sin(rayAngle);
+                    } else {
+                        wallX = playerPos[0] + dist * Math.cos(rayAngle);
+                    }
+                    wallX %= 1;
+                    if (wallX < 0) wallX += 1;
+                    
+                    // Select texture
+                    const texture = wallTextures[textureId];
+                    
+                    // Draw textured column with improved scaling
+                    const texX = Math.floor(wallX * TEXTURE_SIZE);
+                    
+                    if (wallHeight > 0) {
+                        // Use smoothing for better quality when scaling up
+                        ctx.imageSmoothingEnabled = false; // Keep pixelated look for walls
+                        ctx.drawImage(
+                            texture,
+                            texX, 0, 1, TEXTURE_SIZE,
+                            x, (SCREEN_HEIGHT - wallHeight) / 2, 1, wallHeight
+                        );
+                    }
+                    
+                    // Add shadow for depth
+                    if (side === 1) {
+                        ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
+                        ctx.fillRect(x, (SCREEN_HEIGHT - wallHeight) / 2, 1, wallHeight);
+                    }
+                }
+            }
+        }
+
+        // Render floor and ceiling
+        function renderFloorCeiling() {
+            // Simple floor and ceiling
+            ctx.fillStyle = 'rgb(80, 80, 80)';
+            ctx.fillRect(0, HALF_HEIGHT, SCREEN_WIDTH, HALF_HEIGHT);
+            
+            ctx.fillStyle = 'rgb(120, 120, 200)';
+            ctx.fillRect(0, 0, SCREEN_WIDTH, HALF_HEIGHT);
+        }
+
+        // Render HUD
+        function renderHUD() {
+            // Health bar
+            ctx.fillStyle = 'rgb(50, 50, 50)';
+            ctx.fillRect(10, 10, 204, 24);
+            
+            const healthColor = playerHealth < 30 ? 'rgb(255, 0, 0)' : 'rgb(0, 255, 0)';
+            ctx.fillStyle = healthColor;
+            ctx.fillRect(12, 12, 2 * playerHealth, 20);
+            
+            // Score
+            ctx.fillStyle = 'white';
+            ctx.font = '24px Arial';
+            ctx.fillText(`Score: ${playerScore}`, SCREEN_WIDTH - 150, 30);
+            
+            // Compass/direction
+            ctx.strokeStyle = 'white';
+            ctx.beginPath();
+            ctx.arc(SCREEN_WIDTH / 2, 30, 15, 0, Math.PI * 2);
+            ctx.stroke();
+            
+            const angleX = 15 * Math.cos(playerAngle);
+            const angleY = 15 * Math.sin(playerAngle);
+            ctx.strokeStyle = 'red';
+            ctx.beginPath();
+            ctx.moveTo(SCREEN_WIDTH / 2, 30);
+            ctx.lineTo(SCREEN_WIDTH / 2 + angleX, 30 + angleY);
+            ctx.stroke();
+        }
+
+        // Main render function
+        function render() {
+            // Clear screen
+            ctx.fillStyle = 'black';
+            ctx.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+            
+            renderFloorCeiling();
+            renderWalls();
+            renderEntities();
+            renderHUD();
+        }
+
+        // Handle keyboard input
+        const keys = {};
+        
+        window.addEventListener('keydown', (e) => {
+            keys[e.key] = true;
+            
+            // Space bar for shooting/interaction
+            if (e.key === ' ' && gameRunning) {
+                for (const entity of entities) {
+                    if (entity.type === "enemy" && entity.active) {
+                        const dist = entity.distanceToPlayer(playerPos);
+                        if (dist < 2.0) {
+                            entity.active = false;
+                            playerScore += 100;
+                        }
+                    }
+                }
+            }
+        });
+        
+        window.addEventListener('keyup', (e) => {
+            keys[e.key] = false;
+        });
+
+        // Game loop with FPS control
+        function gameLoop(timestamp) {
+            if (!gameRunning) return;
+            
+            // Calculate time since last frame
+            const deltaTime = timestamp - lastFrameTime;
+            const frameInterval = 1000 / fpsLimit;
+            
+            // Only update if enough time has passed
+            if (deltaTime >= frameInterval) {
+                lastFrameTime = timestamp - (deltaTime % frameInterval);
+                
+                // Rotation
+                if (keys['ArrowLeft']) {
+                    playerAngle -= ROTATION_SPEED;
+                }
+                if (keys['ArrowRight']) {
+                    playerAngle += ROTATION_SPEED;
+                }
+                
+                // Movement
+                const moveVec = [
+                    Math.cos(playerAngle) * MOVE_SPEED,
+                    Math.sin(playerAngle) * MOVE_SPEED
+                ];
+                
+                const strafeVec = [
+                    Math.cos(playerAngle + Math.PI/2) * MOVE_SPEED,
+                    Math.sin(playerAngle + Math.PI/2) * MOVE_SPEED
+                ];
+                
+                // Forward/backward movement
+                if (keys['ArrowUp'] || keys['w'] || keys['W']) {
+                    const newPos = [playerPos[0] + moveVec[0], playerPos[1] + moveVec[1]];
+                    if (newPos[0] >= 0 && newPos[0] < MAP.length && 
+                        newPos[1] >= 0 && newPos[1] < MAP[0].length) {
+                        if (MAP[Math.floor(newPos[0])][Math.floor(newPos[1])] === 0) {
+                            playerPos = newPos;
+                        }
+                    }
+                }
+                
+                if (keys['ArrowDown'] || keys['s'] || keys['S']) {
+                    const newPos = [playerPos[0] - moveVec[0], playerPos[1] - moveVec[1]];
+                    if (newPos[0] >= 0 && newPos[0] < MAP.length && 
+                        newPos[1] >= 0 && newPos[1] < MAP[0].length) {
+                        if (MAP[Math.floor(newPos[0])][Math.floor(newPos[1])] === 0) {
+                            playerPos = newPos;
+                        }
+                    }
+                }
+                
+                // Strafe movement
+                if (keys['a'] || keys['A']) {
+                    const newPos = [playerPos[0] - strafeVec[0], playerPos[1] - strafeVec[1]];
+                    if (newPos[0] >= 0 && newPos[0] < MAP.length && 
+                        newPos[1] >= 0 && newPos[1] < MAP[0].length) {
+                        if (MAP[Math.floor(newPos[0])][Math.floor(newPos[1])] === 0) {
+                            playerPos = newPos;
+                        }
+                    }
+                }
+                
+                if (keys['d'] || keys['D']) {
+                    const newPos = [playerPos[0] + strafeVec[0], playerPos[1] + strafeVec[1]];
+                    if (newPos[0] >= 0 && newPos[0] < MAP.length && 
+                        newPos[1] >= 0 && newPos[1] < MAP[0].length) {
+                        if (MAP[Math.floor(newPos[0])][Math.floor(newPos[1])] === 0) {
+                            playerPos = newPos;
+                        }
+                    }
+                }
+                
+                // Update entities
+                for (const entity of entities) {
+                    entity.update(playerPos);
+                }
+                
+                // Render
+                render();
+            }
+            
+            // Continue game loop
+            animationId = requestAnimationFrame(gameLoop);
+        }
+
+        // Initialize game
+        function init() {
+            canvas = document.getElementById('gameCanvas');
+            ctx = canvas.getContext('2d');
+            
+            // Set up button handlers
+            document.getElementById('startBtn').addEventListener('click', startGame);
+            document.getElementById('stopBtn').addEventListener('click', stopGame);
+            document.getElementById('applyFpsBtn').addEventListener('click', applyFps);
+            
+            // Initial render
+            render();
+        }
+
+        // Start game function
+        function startGame() {
+            if (!gameRunning) {
+                gameRunning = true;
+                lastFrameTime = performance.now();
+                animationId = requestAnimationFrame(gameLoop);
+            }
+        }
+
+        // Stop game function
+        function stopGame() {
+            gameRunning = false;
+            if (animationId) {
+                cancelAnimationFrame(animationId);
+            }
+        }
+
+        // Apply FPS limit
+        function applyFps() {
+            const fpsInput = document.getElementById('fpsInput');
+            const newFps = parseInt(fpsInput.value);
+            
+            if (newFps >= 1 && newFps <= 120) {
+                fpsLimit = newFps;
+            } else {
+                alert('Please enter a valid FPS value between 1 and 120');
+                fpsInput.value = fpsLimit;
+            }
+        }
+
+        // Initialize when page loads
+        window.addEventListener('load', init);
+    </script>
+</body>
+</html>
