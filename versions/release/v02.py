@@ -19,7 +19,7 @@ ROTATION_SPEED = 0.1
 
 # Создание экрана
 screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-pygame.display.set_caption("Foxenstein3D - v0.2")
+pygame.display.set_caption("Foxen3D - v0.2")
 clock = pygame.time.Clock()
 
 # Генерация процедурных звуков
