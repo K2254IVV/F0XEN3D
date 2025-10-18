@@ -47,12 +47,14 @@ v0.2 - 48.8 KiB smaller than .kkrieger by 1.9 times
 
 v0.3 (UNPLAYABLE) - Skipped
 
-v0.4 - ??? KiB smaller than .kkrieger by 1.9 times
+v0.4 - 71.8 KiB smaller than .kkrieger by 1.3 times
 
 v0.5.0 (UNPLAYABLE) - Skipped
 
-v0.5.0 (FIXED) (laggy) - ??? KiB smaller than .kkrieger by 2.1 times
+v0.5.0 (FIXED) (laggy) - 79.5 KiB smaller than .kkrieger by 1.1 times
 
-v0.5.1 - ??? KiB smaller than .kkrieger by 2.1 times
+v0.5.0 (FIXED) - 76.9 KiB smaller than .kkrieger by 1.2 times
+
+v0.5.1 - ???
 
 </details>
