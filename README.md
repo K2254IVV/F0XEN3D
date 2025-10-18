@@ -1,6 +1,6 @@
 # F0XEN3D
 ![screenshoot](Screenshot1.png)
-![More Screenshoots on](Screenshots.md)
+[More Screenshoots](Screenshots.md)
 
 The World's Smallest 3D Game (smaller than .kkrieger by ~2 times)
 
