@@ -30,3 +30,29 @@ v0.5.0 (FIXED) (laggy) - 43.9 KiB smaller than .kkrieger by 2.1 times
 v0.5.1 - 44.0 KiB smaller than .kkrieger by 2.1 times
 
 </details>
+
+<details>
+
+<summary> Web Version (Port)</summary>
+
+## ALPHA VERSIONS (LOSTMEDIA):
+
+alphalastest (ALPHABUILD) - 25.1 KiB   smaller than .kkrieger by 3.7 times
+
+## RELEASE VERSIONS:
+
+v0.1 - ??? KiB smaller than .kkrieger by 3.5 times
+
+v0.2 - ??? KiB smaller than .kkrieger by 3 times
+
+v0.3 (UNPLAYABLE) - Skipped
+
+v0.4 - ??? KiB smaller than .kkrieger by 1.9 times
+
+v0.5.0 (UNPLAYABLE) - Skipped
+
+v0.5.0 (FIXED) (laggy) - ??? KiB smaller than .kkrieger by 2.1 times
+
+v0.5.1 - ??? KiB smaller than .kkrieger by 2.1 times
+
+</details>
