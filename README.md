@@ -21,4 +21,4 @@ v0.5.0 (UNPLAYABLE) - 43.7 KiB smaller than .kkrieger by 2.1 times
 
 v0.5.0 (FIXED) (laggy) - 43.9 KiB smaller than .kkrieger by 2.1 times
 
-v0.5.1 - 
+v0.5.1 - 44.0 KiB smaller than .kkrieger by 2.1 times
